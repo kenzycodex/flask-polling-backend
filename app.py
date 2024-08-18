@@ -1,9 +1,10 @@
 import os
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, abort
 import logging
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager
+from werkzeug.security import check_password_hash
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,7 +19,7 @@ app.config['DEBUG'] = os.getenv('FLASK_DEBUG') == 'True'
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY')
 
 # Set the secret key for JWT
-app.config['JWT_SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY')
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -26,15 +27,13 @@ logging.basicConfig(level=logging.DEBUG)
 # Initialize JWTManager
 jwt = JWTManager(app)
 
-# In-memory storage for polls (temporary data store)
-polls = []
-
 # Import feature modules
 from auth import auth_blueprint
 from poll_expiry import poll_expiry_blueprint
 from user_votes import user_votes_blueprint
 from analytics import analytics_blueprint
 from caching import cache_blueprint
+from admin import admin_blueprint  
 
 # Register blueprints
 app.register_blueprint(auth_blueprint)
@@ -42,6 +41,7 @@ app.register_blueprint(poll_expiry_blueprint)
 app.register_blueprint(user_votes_blueprint)
 app.register_blueprint(analytics_blueprint)
 app.register_blueprint(cache_blueprint)
+app.register_blueprint(admin_blueprint)  
 
 # Default route
 @app.route('/')
