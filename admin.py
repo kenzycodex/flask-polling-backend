@@ -161,33 +161,3 @@ def admin_delete_user(user_id):
     return jsonify({"message": "User deleted successfully"}), 200
 
 # Admin route to get poll insights and analytics
-@admin_blueprint.route('/admin/poll/analytics', methods=['GET'])
-def admin_poll_analytics():
-    conn_polls = get_db_connection('polls.db')  # Database connection for polls
-    conn_users = get_db_connection('polls.db')  # Database connection for user_votes
-
-    # Analytics data
-    analytics = {}
-
-    try:
-        # Total votes
-        total_votes_query = 'SELECT COUNT(*) FROM user_votes'
-        total_votes = conn_users.execute(total_votes_query).fetchone()[0]
-        analytics['total_votes'] = total_votes
-
-        # Active vs. expired polls
-        current_time = datetime.datetime.now()
-        active_polls_query = 'SELECT COUNT(*) FROM polls WHERE expiry_date > ?'
-        expired_polls_query = 'SELECT COUNT(*) FROM polls WHERE expiry_date <= ?'
-        active_polls = conn_polls.execute(active_polls_query, (current_time,)).fetchone()[0]
-        expired_polls = conn_polls.execute(expired_polls_query, (current_time,)).fetchone()[0]
-        analytics['active_polls'] = active_polls
-        analytics['expired_polls'] = expired_polls
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        conn_polls.close()
-        conn_users.close()
-
-    return jsonify(analytics), 200
