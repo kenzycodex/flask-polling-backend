@@ -25,7 +25,8 @@ def create_users_table():
                     username TEXT UNIQUE NOT NULL,
                     phone_number TEXT NOT NULL,
                     location TEXT NOT NULL,
-                    password TEXT NOT NULL)''')
+                    password TEXT NOT NULL,
+                    status TEXT DEFAULT 'inactive')''')
     conn.execute('''CREATE TABLE IF NOT EXISTS tokens_blacklist (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     jti TEXT NOT NULL UNIQUE,
