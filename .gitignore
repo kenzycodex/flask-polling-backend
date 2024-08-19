@@ -9,3 +9,6 @@ __pycache__/
 # Ignore virtual environments
 venv/
 .venv/
+
+*.sqlite
+*.db
