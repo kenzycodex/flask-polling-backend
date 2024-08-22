@@ -1,29 +1,58 @@
+import os
 from flask import Blueprint, request, jsonify
 from datetime import datetime, timedelta
 from flask_jwt_extended import jwt_required, get_jwt_identity
-import sqlite3
+import pymysql.cursors
+from pymysql import MySQLError
 
 poll_expiry_blueprint = Blueprint('poll_expiry', __name__)
 
-# Connect to the SQLite database
+# Connect to the MySQL database
 def get_db_connection():
-    conn = sqlite3.connect('polls.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = pymysql.connect(
+            host=os.getenv('MYSQL_HOST'),
+            user=os.getenv('MYSQL_USER'),
+            password=os.getenv('MYSQL_PASSWORD'),
+            database=os.getenv('MYSQL_DATABASE'),
+            port=int(os.getenv('MYSQL_PORT')),  
+            cursorclass=pymysql.cursors.DictCursor
+        )
+        return conn
+    except MySQLError as e:
+        print(f"Error connecting to MySQL: {e}")
+        raise
 
 # Create the polls table if it doesn't exist
 def create_polls_table():
-    conn = get_db_connection()
-    conn.execute('''CREATE TABLE IF NOT EXISTS polls (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    question TEXT NOT NULL,
-                    options TEXT NOT NULL,
-                    votes TEXT NOT NULL,
-                    expiry DATETIME NOT NULL,
-                    created_by TEXT NOT NULL,
-                    UNIQUE(question, created_by))''')
-    conn.commit()
-    conn.close()
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS polls (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            question TEXT NOT NULL,
+                            options TEXT NOT NULL,
+                            votes TEXT NOT NULL,
+                            expiry DATETIME NOT NULL,
+                            created_by VARCHAR(255) NOT NULL,
+                            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE KEY(question(255), created_by))''')  # Specified length for TEXT column
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_votes (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            user_id VARCHAR(255) NOT NULL,
+                            poll_id INT NOT NULL,
+                            UNIQUE(user_id, poll_id),
+                            FOREIGN KEY (poll_id) REFERENCES polls(id) ON DELETE CASCADE)''')
+        conn.commit()
+    except MySQLError as e:
+        print(f"Error creating tables: {e}")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 # Ensure the table is created when the app starts
 create_polls_table()
@@ -54,25 +83,27 @@ def create_poll():
         votes_str = ','.join(['0'] * len(options))
 
         conn = get_db_connection()
+        cursor = conn.cursor()
         try:
             # Check if a poll with the same question and creator already exists
-            existing_poll = conn.execute('''SELECT * FROM polls 
-                                           WHERE question = ? AND created_by = ?''',
-                                        (question, current_user)).fetchone()
+            cursor.execute('''SELECT * FROM polls 
+                              WHERE question = %s AND created_by = %s''',
+                           (question, current_user))
+            existing_poll = cursor.fetchone()
             if existing_poll:
-                conn.close()
                 return jsonify({"error": "Poll already exists"}), 409
-            
+
             # Insert poll into the database
-            conn.execute('''INSERT INTO polls (question, options, votes, expiry, created_by) 
-                            VALUES (?, ?, ?, ?, ?)''', 
-                         (question, options_str, votes_str, expiry.isoformat(), current_user))
+            cursor.execute('''INSERT INTO polls (question, options, votes, expiry, created_by, created_at) 
+                              VALUES (%s, %s, %s, %s, %s, %s)''',
+                           (question, options_str, votes_str, expiry.isoformat(), current_user, datetime.utcnow()))
             conn.commit()
             return jsonify({"message": "Poll created"}), 201
-        except Exception as e:
+        except MySQLError as e:
             conn.rollback()
             return jsonify({"error": str(e)}), 500
         finally:
+            cursor.close()
             conn.close()
 
     except Exception as e:
@@ -83,91 +114,103 @@ def create_poll():
 def vote(poll_id, option_index):
     user_id = get_jwt_identity()
     conn = get_db_connection()
+    cursor = conn.cursor()
     
     try:
-        conn.execute('BEGIN TRANSACTION')
-        
         # Check if the user has already voted in this poll
-        existing_vote = conn.execute("SELECT * FROM user_votes WHERE user_id = ? AND poll_id = ?", (user_id, poll_id)).fetchone()
+        cursor.execute("SELECT * FROM user_votes WHERE user_id = %s AND poll_id = %s", (user_id, poll_id))
+        existing_vote = cursor.fetchone()
         if existing_vote:
-            conn.execute('ROLLBACK')
-            conn.close()
             return jsonify({"error": "You have already voted in this poll"}), 400
         
         # Retrieve poll data
-        poll = conn.execute("SELECT * FROM polls WHERE id = ?", (poll_id,)).fetchone()
+        cursor.execute("SELECT * FROM polls WHERE id = %s", (poll_id,))
+        poll = cursor.fetchone()
         if not poll:
-            conn.execute('ROLLBACK')
-            conn.close()
             return jsonify({"error": "Poll not found"}), 404
 
         # Check if the poll has expired
-        if datetime.fromisoformat(poll['expiry']) < datetime.utcnow():
-            conn.execute('ROLLBACK')
-            conn.close()
+        if poll['expiry'] < datetime.utcnow():
             return jsonify({"error": "Poll has expired"}), 403
         
         options = poll['options'].split(',')
         votes = list(map(int, poll['votes'].split(',')))
 
         if not (0 <= option_index < len(options)):
-            conn.execute('ROLLBACK')
-            conn.close()
             return jsonify({"error": "Invalid option index"}), 400
 
         votes[option_index] += 1
         votes_str = ','.join(map(str, votes))
 
         # Update poll votes and record user's vote
-        conn.execute("UPDATE polls SET votes = ? WHERE id = ?", (votes_str, poll_id))
-        conn.execute("INSERT INTO user_votes (user_id, poll_id) VALUES (?, ?)", (user_id, poll_id))
-        conn.execute('COMMIT')
+        cursor.execute("UPDATE polls SET votes = %s WHERE id = %s", (votes_str, poll_id))
+        cursor.execute("INSERT INTO user_votes (user_id, poll_id) VALUES (%s, %s)", (user_id, poll_id))
+        conn.commit()
+
         return jsonify({"message": "Vote recorded", "poll": {
             'id': poll['id'],
             'question': poll['question'],
             'options': options,
             'votes': votes,
             'expiry': poll['expiry'],
-            'created_by': poll['created_by']
+            'created_by': poll['created_by'],
+            'created_at': poll['created_at']
         }}), 200
 
-    except Exception as e:
-        conn.execute('ROLLBACK')
+    except MySQLError as e:
+        conn.rollback()
         return jsonify({"error": "An error occurred", "details": str(e)}), 500
     finally:
+        cursor.close()
         conn.close()
 
 @poll_expiry_blueprint.route('/polls', methods=['GET'])
 def get_polls():
     conn = get_db_connection()
-    polls = conn.execute("SELECT * FROM polls").fetchall()
-    conn.close()
-    
-    polls_list = [{
-        'id': poll['id'],
-        'question': poll['question'],
-        'options': poll['options'].split(','),
-        'votes': list(map(int, poll['votes'].split(','))),
-        'expiry': poll['expiry'],
-        'created_by': poll['created_by']
-    } for poll in polls]
-    
-    return jsonify({"polls": polls_list}), 200
-
-@poll_expiry_blueprint.route('/polls/<int:poll_id>', methods=['GET'])
-def get_poll(poll_id):
-    conn = get_db_connection()
-    poll = conn.execute("SELECT * FROM polls WHERE id = ?", (poll_id,)).fetchone()
-    conn.close()
-
-    if poll:
-        return jsonify({
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM polls")
+        polls = cursor.fetchall()
+        
+        polls_list = [{
             'id': poll['id'],
             'question': poll['question'],
             'options': poll['options'].split(','),
             'votes': list(map(int, poll['votes'].split(','))),
             'expiry': poll['expiry'],
-            'created_by': poll['created_by']
-        }), 200
-    
-    return jsonify({"error": "Poll not found"}), 404
+            'created_by': poll['created_by'],
+            'created_at': poll['created_at']
+        } for poll in polls]
+        
+        return jsonify({"polls": polls_list}), 200
+    except MySQLError as e:
+        return jsonify({"error": "An error occurred", "details": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
+
+@poll_expiry_blueprint.route('/polls/<int:poll_id>', methods=['GET'])
+def get_poll(poll_id):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT * FROM polls WHERE id = %s", (poll_id,))
+        poll = cursor.fetchone()
+
+        if poll:
+            return jsonify({
+                'id': poll['id'],
+                'question': poll['question'],
+                'options': poll['options'].split(','),
+                'votes': list(map(int, poll['votes'].split(','))),
+                'expiry': poll['expiry'],
+                'created_by': poll['created_by'],
+                'created_at': poll['created_at']
+            }), 200
+        
+        return jsonify({"error": "Poll not found"}), 404
+    except MySQLError as e:
+        return jsonify({"error": "An error occurred", "details": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()

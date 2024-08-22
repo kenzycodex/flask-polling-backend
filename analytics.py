@@ -1,56 +1,93 @@
-from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+import os
+from flask import Blueprint, jsonify
 from datetime import datetime
-import sqlite3
+import pymysql.cursors
+from pymysql import MySQLError
 
 analytics_blueprint = Blueprint('analytics', __name__)
 
-# Connect to the SQLite database
 def get_db_connection():
-    conn = sqlite3.connect('polls.db')
-    conn.row_factory = sqlite3.Row
-    return conn
-
-@analytics_blueprint.route('/poll/analytics/<int:poll_id>', methods=['GET'])
-@jwt_required()
-def poll_analytics(poll_id):
-    conn = get_db_connection()
-    current_user = get_jwt_identity()
-    
     try:
-        # Retrieve poll data
-        poll = conn.execute("SELECT * FROM polls WHERE id = ?", (poll_id,)).fetchone()
-        if not poll:
-            return jsonify({"error": "Poll not found"}), 404
+        conn = pymysql.connect(
+            host=os.getenv('MYSQL_HOST'),
+            user=os.getenv('MYSQL_USER'),
+            password=os.getenv('MYSQL_PASSWORD'),
+            database=os.getenv('MYSQL_DATABASE'),
+            port=int(os.getenv('MYSQL_PORT')),  
+            cursorclass=pymysql.cursors.DictCursor
+        )
+        return conn
+    except MySQLError as e:
+        print(f"Error connecting to MySQL: {e}")
+        raise
 
-        # Check if the poll has expired
-        if datetime.fromisoformat(poll['expiry']) < datetime.utcnow():
-            return jsonify({"error": "Poll has expired"}), 403
-
-        options = poll['options'].split(',')
-        votes = list(map(int, poll['votes'].split(',')))
-        total_votes = sum(votes)
-
-        # Calculate analytics
-        analytics = {
-            'total_votes': total_votes,
-            'options': [
-                {
-                    'option': option,
-                    'votes': vote,
-                    'percentage': round((vote / total_votes) * 100, 2) if total_votes > 0 else 0
-                }
-                for option, vote in zip(options, votes)
-            ],
-            'created_at': poll['created_at'],
-            'expiry': poll['expiry'],
-            'status': 'active' if poll['expiry'] > datetime.utcnow().isoformat() else 'expired',
-            'created_by': poll['created_by']
-        }
-
-        return jsonify({"analytics": analytics}), 200
-
-    except Exception as e:
+@analytics_blueprint.route('/polls/analytics/votes', methods=['GET'])
+def get_votes_analytics():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''SELECT p.id, p.question, p.options, p.votes
+                          FROM polls p''')
+        polls = cursor.fetchall()
+        
+        analytics = []
+        for poll in polls:
+            votes = list(map(int, poll['votes'].split(',')))
+            total_votes = sum(votes)
+            options = poll['options'].split(',')
+            analytics.append({
+                'poll_id': poll['id'],
+                'question': poll['question'],
+                'total_votes': total_votes,
+                'options': [{'option': options[i], 'votes': votes[i]} for i in range(len(options))]
+            })
+        
+        return jsonify({"votes_analytics": analytics}), 200
+    
+    except MySQLError as e:
         return jsonify({"error": "An error occurred", "details": str(e)}), 500
+    
     finally:
+        cursor.close()
+        conn.close()
+
+@analytics_blueprint.route('/polls/analytics/users', methods=['GET'])
+def get_users_analytics():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''SELECT uv.user_id, COUNT(*) as vote_count
+                          FROM user_votes uv
+                          JOIN polls p ON uv.poll_id = p.id
+                          WHERE p.expiry >= %s
+                          GROUP BY uv.user_id''', (datetime.utcnow(),))
+        user_votes = cursor.fetchall()
+        
+        return jsonify({"user_votes_analytics": user_votes}), 200
+
+    except MySQLError as e:
+        return jsonify({"error": "An error occurred", "details": str(e)}), 500
+    
+    finally:
+        cursor.close()
+        conn.close()
+
+@analytics_blueprint.route('/polls/analytics/expiry', methods=['GET'])
+def get_expiry_analytics():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''SELECT id, question, expiry, TIMESTAMPDIFF(DAY, NOW(), expiry) AS days_until_expiry
+                          FROM polls
+                          WHERE expiry >= %s
+                          ORDER BY expiry ASC''', (datetime.utcnow(),))
+        expiry_data = cursor.fetchall()
+
+        return jsonify({"expiry_analytics": expiry_data}), 200
+
+    except MySQLError as e:
+        return jsonify({"error": "An error occurred", "details": str(e)}), 500
+    
+    finally:
+        cursor.close()
         conn.close()
