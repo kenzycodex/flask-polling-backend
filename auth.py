@@ -142,7 +142,7 @@ def register():
         logger.debug(f"User {username} inserted into database. Attempting to send verification email.")
 
         # Send 2FA code to the user's email
-        success, message = send_2fa_code_internal(email, "Welcome! Please verify your account")
+        success, message = send_2fa_code_internal(email, purpose="verification")
         if success:
             logger.info(f"User {username} registered successfully. Verification email sent.")
             return jsonify({"message": "User registered successfully. A verification code has been sent to your email."}), 201
@@ -238,7 +238,7 @@ def reset_password():
 
         if user:
             email = user['email']
-            success, message = send_2fa_code_internal(email, "Reset your password")
+            success, message = send_2fa_code_internal(email, purpose="password_reset")
             if success:
                 logger.info(f"Password reset initiated for {email}. Verification code sent.")
                 return jsonify({"message": "A verification code has been sent to your email."}), 200
