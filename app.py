@@ -48,11 +48,11 @@ def create_app(config_name=None):
     from analytics import analytics_blueprint
     from caching import cache_blueprint
     from factor_auth import factor_auth_blueprint
-    from security import security_blueprint, init_jwt
+    #from security import security_blueprint, init_jwt
     #from admin import admin_blueprint
 
     # Initialize JWT in security module
-    init_jwt(jwt)
+    #init_jwt(jwt)
 
     # Register blueprints
     app.register_blueprint(auth_blueprint)
@@ -60,7 +60,7 @@ def create_app(config_name=None):
     app.register_blueprint(analytics_blueprint)
     app.register_blueprint(cache_blueprint, url_prefix='/cache')
     app.register_blueprint(factor_auth_blueprint)
-    app.register_blueprint(security_blueprint)
+    #app.register_blueprint(security_blueprint)
     #app.register_blueprint(admin_blueprint)
 
     # Test MySQL connection route
@@ -101,3 +101,5 @@ if __name__ == '__main__':
     except Exception as e:
         logging.error(f"Failed to start the server: {e}")
         raise
+        
+app = create_app()

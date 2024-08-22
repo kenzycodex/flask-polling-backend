@@ -4,17 +4,21 @@ import logging
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify, current_app
 from werkzeug.security import generate_password_hash, check_password_hash
-from flask_jwt_extended import jwt_required, get_jwt_identity
-from flask_jwt_extended import create_access_token, jwt_required, get_jwt
+from flask_jwt_extended import jwt_required, get_jwt_identity, create_access_token, get_jwt
 import pymysql.cursors
 from pymysql import MySQLError
 from factor_auth import send_2fa_code_internal, verify_2fa_code_internal
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 auth_blueprint = Blueprint('auth', __name__)
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
 
 # Connect to the MySQL database with error handling and logging
 def get_db_connection():
@@ -74,14 +78,23 @@ def is_valid_email(email):
 
 # Username validation regex
 def is_valid_username(username):
-    return re.match(r'^[a-zA-Z0-9_.-]+$', username)
+    return re.match(r'^[a-zA-Z0-9_.-]{4,20}$', username)
 
 # Phone number validation regex
 def is_valid_phone_number(phone_number):
     return re.match(r'^\+?[0-9]{10,15}$', phone_number)
 
+# Strong password validation
+def is_strong_password(password):
+    return (len(password) >= 8 and
+            re.search(r"[A-Z]", password) and
+            re.search(r"[a-z]", password) and
+            re.search(r"[0-9]", password) and
+            re.search(r"[!@#$%^&*(),.?\":{}|<>]", password))
+
 # Route to register a new user
 @auth_blueprint.route('/register', methods=['POST'])
+@limiter.limit("5/hour")
 def register():
     data = request.get_json()
     full_name = data.get('full_name')
@@ -98,11 +111,11 @@ def register():
     if not is_valid_email(email):
         return jsonify({"error": "Invalid email format"}), 400
     if not is_valid_username(username):
-        return jsonify({"error": "Invalid username format"}), 400
+        return jsonify({"error": "Invalid username format. It should be 4-20 characters long and contain only letters, numbers, underscores, dots, or hyphens."}), 400
     if not is_valid_phone_number(phone_number):
         return jsonify({"error": "Invalid phone number format"}), 400
-    if len(password) < 6:
-        return jsonify({"error": "Password must be at least 6 characters long"}), 400
+    if not is_strong_password(password):
+        return jsonify({"error": "Password must be at least 8 characters long and contain uppercase, lowercase, numbers, and special characters"}), 400
     if password != confirm_password:
         return jsonify({"error": "Passwords do not match"}), 400
 
@@ -153,6 +166,7 @@ def register():
 
 # Route to verify 2FA code
 @auth_blueprint.route('/verify', methods=['POST'])
+@limiter.limit("5/hour")
 def verify():
     data = request.get_json()
     email = data.get('email')
@@ -172,6 +186,7 @@ def verify():
 
 # Route to log in a user
 @auth_blueprint.route('/login', methods=['POST'])
+@limiter.limit("5/minute")
 def login():
     data = request.get_json()
     login_info = data.get('login_info')  # This could be either email or username
@@ -207,6 +222,7 @@ def login():
 
 # Route to reset password
 @auth_blueprint.route('/reset_password', methods=['POST'])
+@limiter.limit("3/hour")
 def reset_password():
     data = request.get_json()
     identifier = data.get('identifier')  # Could be either email or phone number
@@ -241,6 +257,7 @@ def reset_password():
 
 # Route to confirm password reset with verification code
 @auth_blueprint.route('/confirm_reset', methods=['POST'])
+@limiter.limit("3/hour")
 def confirm_reset():
     data = request.get_json()
     email = data.get('email')
@@ -251,8 +268,8 @@ def confirm_reset():
     # Validate incoming data
     if not all([email, verification_code, new_password, confirm_password]):
         return jsonify({"error": "All fields are required"}), 400
-    if len(new_password) < 6:
-        return jsonify({"error": "Password must be at least 6 characters long"}), 400
+    if not is_strong_password(new_password):
+        return jsonify({"error": "Password must be at least 8 characters long and contain uppercase, lowercase, numbers, and special characters"}), 400
     if new_password != confirm_password:
         return jsonify({"error": "Passwords do not match"}), 400
 
@@ -299,6 +316,7 @@ def logout():
 # Route to get user profile
 @auth_blueprint.route('/profile', methods=['GET'])
 @jwt_required()
+@limiter.limit("10/minute")
 def profile():
     conn = None
     cursor = None
@@ -317,8 +335,6 @@ def profile():
         # Fetch the user's profile information using the username
         cursor.execute("SELECT full_name, email, username, phone_number, location FROM users WHERE username = %s", (username,))
         user = cursor.fetchone()
-
-        logger.debug(f"User data fetched: {user}")
 
         # Check if user exists
         if user is None:
