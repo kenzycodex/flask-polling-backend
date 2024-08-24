@@ -207,7 +207,7 @@ def login():
 
         if user and check_password_hash(user['password'], password):
             # Create a new token that expires in 1 hour
-            token = create_access_token(identity=user['username'], expires_delta=timedelta(hours=1))
+            token = create_access_token(identity=user['username'], expires_delta=timedelta(days=5))
             logger.info(f"User {user['username']} logged in successfully.")
             return jsonify({'token': token}), 200
         else:

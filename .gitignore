@@ -12,3 +12,7 @@ venv/
 
 *.sqlite
 *.db
+
+# Ignore password generator script 
+generate_password.py
+generate_password1.py
